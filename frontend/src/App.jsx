@@ -3,8 +3,12 @@ import ComplaintPage from "./pages/ComplaintPage";
 function App() {
     const [showComplaintPage, setShowComplaintPage] = useState(false);
       if (showComplaintPage) {
-        return <ComplaintPage />;
-      }
+        return (
+        <ComplaintPage
+        onBack={() => setShowComplaintPage(false)}
+    />
+  );
+}
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
 
