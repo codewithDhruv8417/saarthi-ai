@@ -1,4 +1,10 @@
+import { useState } from "react";
+import ComplaintPage from "./pages/ComplaintPage";
 function App() {
+    const [showComplaintPage, setShowComplaintPage] = useState(false);
+      if (showComplaintPage) {
+        return <ComplaintPage />;
+      }
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
 
@@ -50,7 +56,10 @@ function App() {
 
             {/* CTA Buttons */}
             <div className="mt-8 flex flex-col gap-4 sm:flex-row">
-              <button className="rounded-xl bg-blue-700 px-7 py-3.5 font-semibold text-white shadow-lg shadow-blue-700/20 transition hover:-translate-y-0.5 hover:bg-blue-800">
+              <button
+                 onClick={() => setShowComplaintPage(true)}
+                 className="rounded-xl bg-blue-700 px-7 py-3.5 font-semibold text-white shadow-lg shadow-blue-700/20 transition hover:-translate-y-0.5 hover:bg-blue-800"
+              >
                 Report an Issue
               </button>
 
