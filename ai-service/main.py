@@ -6,6 +6,7 @@ from typing import List, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -21,10 +22,9 @@ from database import Complaint, Officer, SessionLocal
 # Load values from ai-service/.env
 load_dotenv()
 
-# Read the Gemini API key securely
+# Read Gemini API key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Stop startup if the API key is missing
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY was not found in .env")
 
@@ -33,7 +33,6 @@ if not GEMINI_API_KEY:
 # 2. GEMINI CLIENT
 # =========================================================
 
-# Create the Gemini client
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
@@ -49,13 +48,34 @@ app = FastAPI(
 
 
 # =========================================================
-# 4. PYDANTIC MODELS
+# 4. CORS CONFIGURATION
+# =========================================================
+
+# Local frontend origins.
+# Production frontend URL will be added when deployed.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =========================================================
+# 5. PYDANTIC MODELS
 # =========================================================
 
 class ComplaintAnalysis(BaseModel):
     """
-    Complete response returned when a new complaint
-    is analyzed by Gemini.
+    Complete response returned after a complaint is analyzed.
     """
 
     ticket_id: str
@@ -81,9 +101,12 @@ class ComplaintListItem(BaseModel):
     priority: str
     department: str
 
-    # Officer assignment information
     assigned_officer_id: int | None
     assigned_officer_name: str | None
+
+    latitude: float | None
+    longitude: float | None
+    address: str | None
 
     confidence: float
     review_required: bool
@@ -125,7 +148,7 @@ class OfficerResponse(BaseModel):
 
 
 # =========================================================
-# 5. TICKET ID GENERATOR
+# 6. TICKET ID GENERATOR
 # =========================================================
 
 def generate_ticket_id() -> str:
@@ -143,7 +166,7 @@ def generate_ticket_id() -> str:
 
 
 # =========================================================
-# 6. ROOT ENDPOINT
+# 7. ROOT ENDPOINT
 # =========================================================
 
 @app.get("/")
@@ -159,7 +182,7 @@ def root():
 
 
 # =========================================================
-# 7. HEALTH CHECK
+# 8. HEALTH CHECK
 # =========================================================
 
 @app.get("/health")
@@ -174,16 +197,13 @@ def health():
 
 
 # =========================================================
-# 8. GET ALL ACTIVE OFFICERS
+# 9. GET ACTIVE OFFICERS
 # =========================================================
 
 @app.get("/officers", response_model=List[OfficerResponse])
 def get_officers():
     """
     Return all active government officers.
-
-    The frontend will use this endpoint to populate
-    the officer assignment dropdown.
     """
 
     db = SessionLocal()
@@ -212,7 +232,7 @@ def get_officers():
 
 
 # =========================================================
-# 9. GET ALL COMPLAINTS
+# 10. GET ALL COMPLAINTS
 # =========================================================
 
 @app.get("/complaints", response_model=List[ComplaintListItem])
@@ -220,11 +240,11 @@ def get_complaints():
     """
     Return all saved complaints.
 
-    Used by:
-    - Citizen dashboard
-    - Officer dashboard
-    - Complaint management
-    - Analytics
+    Includes:
+    - AI analysis
+    - Officer assignment
+    - Location
+    - Current status
     """
 
     db = SessionLocal()
@@ -244,9 +264,12 @@ def get_complaints():
                 priority=complaint.priority,
                 department=complaint.department,
 
-                # Assigned officer details
                 assigned_officer_id=complaint.assigned_officer_id,
                 assigned_officer_name=complaint.assigned_officer_name,
+
+                latitude=complaint.latitude,
+                longitude=complaint.longitude,
+                address=complaint.address,
 
                 confidence=complaint.confidence,
                 review_required=complaint.review_required,
@@ -261,7 +284,7 @@ def get_complaints():
 
 
 # =========================================================
-# 10. GET ONE COMPLAINT BY TICKET ID
+# 11. GET ONE COMPLAINT
 # =========================================================
 
 @app.get("/complaints/{ticket_id}")
@@ -296,13 +319,27 @@ def get_complaint(ticket_id: str):
             "assigned_officer_id": complaint.assigned_officer_id,
             "assigned_officer_name": complaint.assigned_officer_name,
 
+            # Location
+            "latitude": complaint.latitude,
+            "longitude": complaint.longitude,
+            "address": complaint.address,
+
+            # Complaint details
             "summary": complaint.summary,
             "recommended_action": complaint.recommended_action,
+
+            # AI information
             "confidence": complaint.confidence,
             "review_required": complaint.review_required,
+
+            # Status
             "status": complaint.status,
+
+            # Citizen information
             "citizen_description": complaint.citizen_description,
             "image_filename": complaint.image_filename,
+
+            # Timestamp
             "created_at": complaint.created_at,
         }
 
@@ -311,7 +348,7 @@ def get_complaint(ticket_id: str):
 
 
 # =========================================================
-# 11. UPDATE COMPLAINT STATUS
+# 12. UPDATE COMPLAINT STATUS
 # =========================================================
 
 @app.patch("/complaints/{ticket_id}/status")
@@ -323,10 +360,10 @@ def update_complaint_status(
     Update an existing complaint status.
 
     Allowed values:
-    - Submitted
-    - Assigned
-    - In Progress
-    - Resolved
+    Submitted
+    Assigned
+    In Progress
+    Resolved
     """
 
     db = SessionLocal()
@@ -371,7 +408,7 @@ def update_complaint_status(
 
 
 # =========================================================
-# 12. ASSIGN COMPLAINT TO OFFICER
+# 13. ASSIGN COMPLAINT TO OFFICER
 # =========================================================
 
 @app.patch("/complaints/{ticket_id}/assign")
@@ -382,20 +419,13 @@ def assign_complaint(
     """
     Assign a complaint to an active officer.
 
-    The officer's department must match the complaint's
-    department.
-
-    Successful assignment automatically changes the
-    complaint status to "Assigned".
+    The officer's department must match the complaint department.
     """
 
     db = SessionLocal()
 
     try:
-        # -------------------------------------------------
         # Find complaint
-        # -------------------------------------------------
-
         complaint = (
             db.query(Complaint)
             .filter(Complaint.ticket_id == ticket_id)
@@ -408,10 +438,7 @@ def assign_complaint(
                 detail="Complaint ticket not found.",
             )
 
-        # -------------------------------------------------
         # Find active officer
-        # -------------------------------------------------
-
         officer = (
             db.query(Officer)
             .filter(
@@ -427,10 +454,7 @@ def assign_complaint(
                 detail="Active officer not found.",
             )
 
-        # -------------------------------------------------
-        # Validate department compatibility
-        # -------------------------------------------------
-
+        # Verify department compatibility
         if officer.department.lower() not in complaint.department.lower():
             raise HTTPException(
                 status_code=400,
@@ -440,14 +464,11 @@ def assign_complaint(
                 ),
             )
 
-        # -------------------------------------------------
-        # Save assignment
-        # -------------------------------------------------
-
+        # Store officer assignment
         complaint.assigned_officer_id = officer.id
         complaint.assigned_officer_name = officer.name
 
-        # Move complaint to Assigned automatically
+        # Automatically move complaint to Assigned
         complaint.status = "Assigned"
 
         db.commit()
@@ -478,42 +499,37 @@ def assign_complaint(
 
 
 # =========================================================
-# 13. AI IMAGE ANALYSIS
+# 14. AI IMAGE ANALYSIS
 # =========================================================
 
 @app.post("/analyze-image", response_model=ComplaintAnalysis)
 async def analyze_image(
     file: UploadFile = File(...),
     description: str = Form(""),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    address: str = Form(""),
 ):
     """
     Main SaarthiAI AI pipeline.
 
-    Flow:
+    Input:
+        - Citizen image
+        - Citizen description
+        - GPS latitude
+        - GPS longitude
+        - Address
 
-    Image + Description
-            ↓
-        Gemini AI
-            ↓
-      Issue Detection
-            ↓
-         Category
-            ↓
-         Priority
-            ↓
-        Department
-            ↓
-    Recommended Action
-            ↓
-        Confidence
-            ↓
-      Ticket Generation
-            ↓
-     Database Storage
+    Output:
+        - AI analysis
+        - Ticket ID
+        - Complaint status
+
+    The complaint is stored in SQLite.
     """
 
     # =====================================================
-    # 13.1 VALIDATE FILE TYPE
+    # 14.1 VALIDATE FILE
     # =====================================================
 
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -523,7 +539,7 @@ async def analyze_image(
         )
 
     # =====================================================
-    # 13.2 READ IMAGE
+    # 14.2 READ IMAGE
     # =====================================================
 
     contents = await file.read()
@@ -535,7 +551,7 @@ async def analyze_image(
         )
 
     # =====================================================
-    # 13.3 VALIDATE IMAGE CONTENT
+    # 14.3 VALIDATE IMAGE CONTENT
     # =====================================================
 
     try:
@@ -549,7 +565,23 @@ async def analyze_image(
         )
 
     # =====================================================
-    # 13.4 AI ANALYSIS
+    # 14.4 VALIDATE GPS
+    # =====================================================
+
+    if latitude is not None and not (-90 <= latitude <= 90):
+        raise HTTPException(
+            status_code=400,
+            detail="Latitude must be between -90 and 90.",
+        )
+
+    if longitude is not None and not (-180 <= longitude <= 180):
+        raise HTTPException(
+            status_code=400,
+            detail="Longitude must be between -180 and 180.",
+        )
+
+    # =====================================================
+    # 14.5 AI ANALYSIS
     # =====================================================
 
     try:
@@ -627,9 +659,9 @@ Important rules:
 - Use concise and professional language.
 """
 
-        # -------------------------------------------------
-        # Send image + prompt to Gemini
-        # -------------------------------------------------
+        # =================================================
+        # SEND IMAGE + PROMPT TO GEMINI
+        # =================================================
 
         response = client.models.generate_content(
             model="gemini-3.6-flash",
@@ -647,7 +679,7 @@ Important rules:
         )
 
         # =================================================
-        # 13.5 VALIDATE AI RESPONSE
+        # 14.6 VALIDATE AI RESPONSE
         # =================================================
 
         if response.parsed is None:
@@ -659,16 +691,14 @@ Important rules:
         result = response.parsed
 
         # =================================================
-        # 13.6 GENERATE TICKET
+        # 14.7 GENERATE TICKET
         # =================================================
 
         result.ticket_id = generate_ticket_id()
-
-        # Newly created complaints start as Submitted
         result.status = "Submitted"
 
         # =================================================
-        # 13.7 SAVE COMPLAINT TO DATABASE
+        # 14.8 SAVE COMPLAINT
         # =================================================
 
         db = SessionLocal()
@@ -676,6 +706,8 @@ Important rules:
         try:
             complaint = Complaint(
                 ticket_id=result.ticket_id,
+
+                # AI results
                 issue_detected=result.issue_detected,
                 category=result.category,
                 priority=result.priority,
@@ -684,11 +716,22 @@ Important rules:
                 recommended_action=result.recommended_action,
                 confidence=result.confidence,
                 review_required=result.review_required,
+
+                # Initial status
                 status=result.status,
+
+                # Citizen data
                 citizen_description=description,
+
+                # Location
+                latitude=latitude,
+                longitude=longitude,
+                address=address.strip() if address else None,
+
+                # Image
                 image_filename=file.filename,
 
-                # No officer is assigned yet
+                # No officer assigned initially
                 assigned_officer_id=None,
                 assigned_officer_name=None,
             )
@@ -709,13 +752,13 @@ Important rules:
             db.close()
 
         # =================================================
-        # 13.8 RETURN RESULT
+        # 14.9 RETURN RESULT
         # =================================================
 
         return result
 
     # =====================================================
-    # 13.9 ERROR HANDLING
+    # 14.10 ERROR HANDLING
     # =====================================================
 
     except HTTPException:

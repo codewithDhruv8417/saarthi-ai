@@ -18,18 +18,18 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # =========================================================
 
 # SQLite database file.
-# It will be created inside the ai-service folder.
+# This file is stored inside the ai-service directory.
 DATABASE_URL = "sqlite:///./saarthi.db"
 
 
-# Create SQLAlchemy database engine.
+# Create the SQLAlchemy database engine.
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False},
 )
 
 
-# Create a database session factory.
+# Create the database session factory.
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
@@ -37,7 +37,7 @@ SessionLocal = sessionmaker(
 )
 
 
-# Base class for all database models.
+# Base class for all SQLAlchemy models.
 Base = declarative_base()
 
 
@@ -47,7 +47,8 @@ Base = declarative_base()
 
 class Complaint(Base):
     """
-    Stores citizen complaints and AI analysis results.
+    Stores citizen complaints, AI analysis results,
+    location information, and officer assignment.
     """
 
     __tablename__ = "complaints"
@@ -103,9 +104,6 @@ class Complaint(Base):
 
     # -----------------------------------------------------
     # Officer Assignment
-    #
-    # These fields identify the officer currently responsible
-    # for the complaint.
     # -----------------------------------------------------
 
     assigned_officer_id = Column(
@@ -133,7 +131,7 @@ class Complaint(Base):
     )
 
     # -----------------------------------------------------
-    # AI Confidence / Review
+    # AI Confidence / Human Review
     # -----------------------------------------------------
 
     confidence = Column(
@@ -166,13 +164,39 @@ class Complaint(Base):
         nullable=True,
     )
 
+    # -----------------------------------------------------
+    # Location Information
+    # -----------------------------------------------------
+
+    # GPS latitude
+    latitude = Column(
+        Float,
+        nullable=True,
+    )
+
+    # GPS longitude
+    longitude = Column(
+        Float,
+        nullable=True,
+    )
+
+    # Human-readable location/address
+    address = Column(
+        String(500),
+        nullable=True,
+    )
+
+    # -----------------------------------------------------
+    # Uploaded Image
+    # -----------------------------------------------------
+
     image_filename = Column(
         String(255),
         nullable=True,
     )
 
     # -----------------------------------------------------
-    # Timestamp
+    # Creation Timestamp
     # -----------------------------------------------------
 
     created_at = Column(
@@ -225,7 +249,7 @@ class Officer(Base):
     )
 
     # -----------------------------------------------------
-    # Active / Inactive Officer
+    # Officer Active Status
     # -----------------------------------------------------
 
     is_active = Column(
