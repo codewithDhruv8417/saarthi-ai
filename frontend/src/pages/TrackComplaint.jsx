@@ -5,36 +5,67 @@ function TrackComplaint({ onBack }) {
   const [complaint, setComplaint] = useState(null);
   const [error, setError] = useState("");
 
-  const handleTrack = () => {
-    setError("");
-    setComplaint(null);
+  const handleTrack = async () => {
+  setError("");
+  setComplaint(null);
 
-    const id = ticketId.trim().toUpperCase();
+  const id = ticketId.trim().toUpperCase();
 
-    // Empty input
-    if (!id) {
-      setError("Please enter your ticket ID.");
+  if (!id) {
+    setError("Please enter your ticket ID.");
+    return;
+  }
+
+  try {
+    const API_BASE_URL =
+      import.meta.env.VITE_AI_API_URL ||
+      "http://127.0.0.1:8000";
+
+    const response = await fetch(
+      `${API_BASE_URL}/complaints/${encodeURIComponent(id)}`
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      setError(
+        data?.detail || "No complaint found for this ticket ID."
+      );
       return;
     }
 
-    // Temporary demo ticket
-    if (id !== "TKT-2026-001") {
-      setError("No complaint found for this ticket ID.");
-      return;
-    }
-
-    // Demo complaint data
+    // Convert backend response into the format
+    // already used by the tracking UI.
     setComplaint({
-      ticket_id: id,
-      issue: "Large pothole on main road",
-      category: "Road Infrastructure",
-      department: "Public Works Department",
-      priority: "High",
-      status: "Submitted",
-      location: "Sonipat, Haryana",
-      submitted: "20 August 2026",
+      ticket_id: data.ticket_id,
+      issue: data.issue_detected,
+      category: data.category,
+      department: data.department,
+      priority: data.priority,
+      status: data.status,
+      location:
+        data.address ||
+        (
+          data.latitude !== null &&
+          data.longitude !== null
+            ? `${data.latitude}, ${data.longitude}`
+            : "Location not available"
+        ),
+      submitted: data.created_at
+        ? new Date(data.created_at).toLocaleString()
+        : "Unknown",
+      assigned_officer_name:
+        data.assigned_officer_name || null,
+      confidence: data.confidence,
     });
-  };
+  } catch (error) {
+    console.error("Complaint tracking error:", error);
+
+    setError(
+      "Unable to connect to SaarthiAI. Please make sure the AI service is running."
+    );
+  }
+};
 
   return (
     <div className="min-h-screen bg-slate-50">
