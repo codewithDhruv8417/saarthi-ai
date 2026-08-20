@@ -1,57 +1,87 @@
 import { useEffect, useState } from "react";
 
-const API_BASE_URL =
-  import.meta.env.VITE_AI_API_URL || "http://127.0.0.1:8000";
+const API_URL =
+  import.meta.env.VITE_AI_API_URL ||
+  "https://saarthi-api.ds8818059410.workers.dev";
+
+const analysisSteps = [
+  "Uploading image...",
+  "Identifying issue...",
+  "Determining category...",
+  "Checking priority...",
+  "Finding responsible department...",
+  "Generating complaint ticket...",
+];
+
+function getErrorMessage(errorData, fallback = "Something went wrong. Please try again.") {
+  if (!errorData) {
+    return fallback;
+  }
+
+  if (typeof errorData === "string") {
+    return errorData;
+  }
+
+  if (typeof errorData === "object") {
+    if (typeof errorData.message === "string") {
+      return errorData.message;
+    }
+
+    if (typeof errorData.detail === "string") {
+      return errorData.detail;
+    }
+
+    if (errorData.detail && typeof errorData.detail === "object") {
+      if (typeof errorData.detail.message === "string") {
+        return errorData.detail.message;
+      }
+
+      if (typeof errorData.detail.gemini_response?.error?.message === "string") {
+        return errorData.detail.gemini_response.error.message;
+      }
+
+      return JSON.stringify(errorData.detail);
+    }
+
+    if (typeof errorData.error === "string") {
+      return errorData.error;
+    }
+
+    return JSON.stringify(errorData);
+  }
+
+  return fallback;
+}
 
 function ComplaintPage({ onBack }) {
   const [selectedImage, setSelectedImage] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState("");
   const [description, setDescription] = useState("");
-
-  // Human-readable location
   const [location, setLocation] = useState("");
 
-  // GPS coordinates
   const [latitude, setLatitude] = useState(null);
   const [longitude, setLongitude] = useState(null);
 
-  const [isLocating, setIsLocating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState(0);
 
-  const [analysisResult, setAnalysisResult] = useState(null);
-  const [errorMessage, setErrorMessage] = useState("");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
 
-  const analysisSteps = [
-    "Uploading image...",
-    "Identifying issue...",
-    "Determining category...",
-    "Checking priority...",
-    "Finding responsible department...",
-    "Generating complaint ticket...",
-  ];
-
-  // ---------------------------------------------------------
-  // Create / clean image preview URL
-  // ---------------------------------------------------------
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
 
   useEffect(() => {
-    if (!selectedImage) {
-      setPreviewUrl("");
-      return;
+    if (!isAnalyzing) {
+      return undefined;
     }
 
-    const objectUrl = URL.createObjectURL(selectedImage);
-    setPreviewUrl(objectUrl);
+    const interval = setInterval(() => {
+      setAnalysisStep((current) =>
+        current < analysisSteps.length - 1 ? current + 1 : current
+      );
+    }, 1200);
 
-    return () => {
-      URL.revokeObjectURL(objectUrl);
-    };
-  }, [selectedImage]);
-
-  // ---------------------------------------------------------
-  // Image selection
-  // ---------------------------------------------------------
+    return () => clearInterval(interval);
+  }, [isAnalyzing]);
 
   const handleImageChange = (event) => {
     const file = event.target.files?.[0];
@@ -60,11 +90,11 @@ function ComplaintPage({ onBack }) {
       return;
     }
 
-    setErrorMessage("");
-    setAnalysisResult(null);
+    setError("");
+    setResult(null);
 
     if (!file.type.startsWith("image/")) {
-      setErrorMessage("Please select a valid image file.");
+      setError("Please select a valid image file.");
       event.target.value = "";
       return;
     }
@@ -72,7 +102,7 @@ function ComplaintPage({ onBack }) {
     const maxSize = 5 * 1024 * 1024;
 
     if (file.size > maxSize) {
-      setErrorMessage("Image size must be less than 5 MB.");
+      setError("Image size must be less than 5 MB.");
       event.target.value = "";
       return;
     }
@@ -80,14 +110,10 @@ function ComplaintPage({ onBack }) {
     setSelectedImage(file);
   };
 
-  // ---------------------------------------------------------
-  // Remove selected image
-  // ---------------------------------------------------------
-
   const removeImage = () => {
     setSelectedImage(null);
-    setPreviewUrl("");
-    setAnalysisResult(null);
+    setError("");
+    setResult(null);
 
     const fileInput = document.getElementById("image-upload");
 
@@ -96,21 +122,15 @@ function ComplaintPage({ onBack }) {
     }
   };
 
-  // ---------------------------------------------------------
-  // Get current device location
-  // ---------------------------------------------------------
-
   const handleGetCurrentLocation = () => {
-    setErrorMessage("");
+    setError("");
 
     if (!navigator.geolocation) {
-      setErrorMessage(
-        "Geolocation is not supported by this browser."
-      );
+      setError("Geolocation is not supported by this browser.");
       return;
     }
 
-    setIsLocating(true);
+    setIsGettingLocation(true);
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
@@ -120,55 +140,72 @@ function ComplaintPage({ onBack }) {
         setLatitude(lat);
         setLongitude(lng);
 
-        // We already have coordinates.
-        // For the prototype, use them as a fallback address.
-        setLocation(
-          `Latitude: ${lat.toFixed(6)}, Longitude: ${lng.toFixed(6)}`
-        );
+        try {
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`
+          );
 
-        setIsLocating(false);
+          if (response.ok) {
+            const data = await response.json();
+
+            const address =
+              data.display_name ||
+              `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+            setLocation(address);
+          } else {
+            setLocation(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+          }
+        } catch {
+          setLocation(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+        } finally {
+          setIsGettingLocation(false);
+        }
       },
-      (error) => {
-        setIsLocating(false);
+      (geoError) => {
+        setIsGettingLocation(false);
 
-        if (error.code === error.PERMISSION_DENIED) {
-          setErrorMessage(
-            "Location permission was denied. Please allow location access or enter the location manually."
-          );
-        } else {
-          setErrorMessage(
-            "Unable to get your current location. Please enter it manually."
-          );
+        switch (geoError.code) {
+          case geoError.PERMISSION_DENIED:
+            setError("Location permission was denied. Enter the location manually.");
+            break;
+
+          case geoError.POSITION_UNAVAILABLE:
+            setError("Current location is unavailable. Enter the location manually.");
+            break;
+
+          case geoError.TIMEOUT:
+            setError("Location request timed out. Enter the location manually.");
+            break;
+
+          default:
+            setError("Could not determine your location.");
         }
       },
       {
         enableHighAccuracy: true,
         timeout: 10000,
-        maximumAge: 0,
+        maximumAge: 60000,
       }
     );
   };
 
-  // ---------------------------------------------------------
-  // Main AI analysis function
-  // ---------------------------------------------------------
-
   const handleAnalyze = async () => {
-    setErrorMessage("");
-    setAnalysisResult(null);
+    setError("");
+    setResult(null);
 
     if (!selectedImage) {
-      setErrorMessage("Please upload an image first.");
+      setError("Please upload an image first.");
       return;
     }
 
     if (!description.trim()) {
-      setErrorMessage("Please describe the issue.");
+      setError("Please describe the issue.");
       return;
     }
 
     if (!location.trim()) {
-      setErrorMessage("Please provide the location.");
+      setError("Please provide the location.");
       return;
     }
 
@@ -178,13 +215,10 @@ function ComplaintPage({ onBack }) {
     try {
       const formData = new FormData();
 
-      // Required image
       formData.append("file", selectedImage);
-
-      // Citizen description
       formData.append("description", description.trim());
+      formData.append("address", location.trim());
 
-      // Location metadata
       if (latitude !== null) {
         formData.append("latitude", String(latitude));
       }
@@ -193,318 +227,56 @@ function ComplaintPage({ onBack }) {
         formData.append("longitude", String(longitude));
       }
 
-      formData.append("address", location.trim());
-
-      // Move loading UI gradually while the real request runs.
-      const progressTimer = setInterval(() => {
-        setAnalysisStep((current) => {
-          if (current >= analysisSteps.length - 1) {
-            return current;
-          }
-
-          return current + 1;
-        });
-      }, 700);
-
       const response = await fetch(
-        `${API_BASE_URL}/analyze-image`,
+        `${API_URL}/analyze-image`,
         {
           method: "POST",
           body: formData,
         }
       );
 
-      clearInterval(progressTimer);
+      const contentType = response.headers.get("content-type") || "";
 
-      let data;
+      let responseData;
 
-      try {
-        data = await response.json();
-      } catch {
-        throw new Error(
-          "The AI service returned an invalid response."
-        );
+      if (contentType.includes("application/json")) {
+        responseData = await response.json();
+      } else {
+        responseData = await response.text();
       }
 
       if (!response.ok) {
         throw new Error(
-          data?.detail ||
-            "AI analysis failed. Please try again."
+          getErrorMessage(
+            responseData,
+            `Request failed with status ${response.status}.`
+          )
         );
       }
 
-      // Show the final step before displaying the result.
       setAnalysisStep(analysisSteps.length - 1);
 
-      // Store actual API response
-      setAnalysisResult(data);
+      setResult(responseData);
 
-    } catch (error) {
-      setErrorMessage(
-        error?.message ||
-          "Unable to connect to SaarthiAI AI service."
+      // Give the final step a moment to display.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    } catch (requestError) {
+      console.error("Complaint analysis failed:", requestError);
+
+      setError(
+        requestError?.message ||
+          "Could not submit the complaint. Please try again."
       );
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // ---------------------------------------------------------
-  // Back button
-  // ---------------------------------------------------------
-
-  const handleBack = () => {
-    if (!isAnalyzing) {
-      onBack();
-    }
-  };
-
-  // ---------------------------------------------------------
-  // Result Screen
-  // ---------------------------------------------------------
-
-  if (analysisResult) {
-    return (
-      <div className="min-h-screen bg-slate-50">
-
-        {/* Header */}
-        <header className="border-b border-slate-200 bg-white">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-16">
-
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-700 font-bold text-white">
-                S
-              </div>
-
-              <div>
-                <h1 className="text-xl font-bold text-blue-900">
-                  SaarthiAI
-                </h1>
-
-                <p className="text-xs text-slate-500">
-                  Complaint Result
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleBack}
-              className="text-sm font-semibold text-slate-600 transition hover:text-blue-700"
-            >
-              Back
-            </button>
-
-          </div>
-        </header>
-
-        {/* Result Content */}
-        <main className="mx-auto max-w-5xl px-6 py-12">
-
-          {/* Success Header */}
-          <div className="mb-8 text-center">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-3xl">
-              ✓
-            </div>
-
-            <p className="mt-5 text-sm font-bold uppercase tracking-widest text-blue-700">
-              AI Analysis Complete
-            </p>
-
-            <h2 className="mt-3 text-4xl font-bold tracking-tight text-slate-950">
-              Complaint Generated Successfully
-            </h2>
-
-            <p className="mt-3 text-slate-600">
-              SaarthiAI analyzed your complaint and generated a
-              government service ticket.
-            </p>
-          </div>
-
-          {/* Ticket */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-xl shadow-slate-200/40">
-
-            <div className="rounded-2xl bg-blue-50 p-6 text-center">
-              <p className="text-sm font-semibold uppercase tracking-widest text-blue-600">
-                Ticket ID
-              </p>
-
-              <p className="mt-2 text-3xl font-bold text-blue-950">
-                {analysisResult.ticket_id}
-              </p>
-
-              <div className="mt-4 inline-flex rounded-full bg-green-100 px-4 py-2 text-sm font-semibold text-green-700">
-                {analysisResult.status}
-              </div>
-            </div>
-
-            {/* Main AI Details */}
-            <div className="mt-8 grid gap-5 md:grid-cols-2">
-
-              <div className="rounded-2xl bg-slate-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  Issue Detected
-                </p>
-
-                <p className="mt-2 text-lg font-bold text-slate-900">
-                  {analysisResult.issue_detected}
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-blue-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-blue-500">
-                  Category
-                </p>
-
-                <p className="mt-2 text-lg font-bold text-blue-950">
-                  {analysisResult.category}
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-orange-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-orange-500">
-                  Priority
-                </p>
-
-                <p className="mt-2 text-lg font-bold text-orange-950">
-                  {analysisResult.priority}
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-purple-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-purple-500">
-                  Department
-                </p>
-
-                <p className="mt-2 text-lg font-bold text-purple-950">
-                  {analysisResult.department}
-                </p>
-              </div>
-
-            </div>
-
-            {/* Confidence */}
-            <div className="mt-6 rounded-2xl bg-green-50 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-green-600">
-                    AI Confidence
-                  </p>
-
-                  <p className="mt-1 text-xl font-bold text-green-900">
-                    {(analysisResult.confidence * 100).toFixed(0)}%
-                  </p>
-                </div>
-
-                <div className="rounded-full bg-green-100 px-4 py-2 text-sm font-semibold text-green-700">
-                  {analysisResult.review_required
-                    ? "Human Review Required"
-                    : "High Confidence"}
-                </div>
-              </div>
-            </div>
-
-            {/* Summary */}
-            <div className="mt-6 rounded-2xl border border-slate-200 p-6">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Complaint Summary
-              </p>
-
-              <p className="mt-2 leading-7 text-slate-700">
-                {analysisResult.summary}
-              </p>
-            </div>
-
-            {/* Recommended Action */}
-            <div className="mt-6 rounded-2xl border border-slate-200 p-6">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Recommended Action
-              </p>
-
-              <p className="mt-2 leading-7 text-slate-700">
-                {analysisResult.recommended_action}
-              </p>
-            </div>
-
-            {/* Location */}
-            <div className="mt-6 rounded-2xl bg-slate-50 p-6">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Complaint Location
-              </p>
-
-              <p className="mt-2 font-semibold text-slate-900">
-                {location}
-              </p>
-
-              {latitude !== null &&
-                longitude !== null && (
-                  <p className="mt-1 text-sm text-slate-500">
-                    {latitude.toFixed(6)},{" "}
-                    {longitude.toFixed(6)}
-                  </p>
-                )}
-            </div>
-
-            {/* Review Warning */}
-            {analysisResult.review_required && (
-              <div className="mt-6 rounded-2xl border border-yellow-200 bg-yellow-50 p-5">
-                <p className="font-bold text-yellow-900">
-                  Human Review Required
-                </p>
-
-                <p className="mt-1 text-sm leading-6 text-yellow-800">
-                  The AI confidence is below the review threshold.
-                  This complaint should be verified by a responsible
-                  officer before final action.
-                </p>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <button
-                type="button"
-                onClick={() => {
-                  setAnalysisResult(null);
-                  setSelectedImage(null);
-                  setPreviewUrl("");
-                  setDescription("");
-                  setLocation("");
-                  setLatitude(null);
-                  setLongitude(null);
-                  setAnalysisStep(0);
-                }}
-                className="flex-1 rounded-2xl bg-blue-700 px-6 py-4 font-bold text-white shadow-lg shadow-blue-700/20 transition hover:bg-blue-800"
-              >
-                Report Another Issue
-              </button>
-
-              <button
-                type="button"
-                onClick={handleBack}
-                className="flex-1 rounded-2xl border border-slate-300 bg-white px-6 py-4 font-bold text-slate-700 transition hover:border-blue-300 hover:text-blue-700"
-              >
-                Back to Home
-              </button>
-            </div>
-
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // ---------------------------------------------------------
-  // Main Complaint / Loading UI
-  // ---------------------------------------------------------
-
   return (
     <div className="min-h-screen bg-slate-50">
-
       {/* Header */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-16">
-
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-700 font-bold text-white">
               S
@@ -523,24 +295,21 @@ function ComplaintPage({ onBack }) {
 
           <button
             type="button"
-            onClick={handleBack}
+            onClick={onBack}
             disabled={isAnalyzing}
             className="text-sm font-semibold text-slate-600 transition hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Back
           </button>
-
         </div>
       </header>
 
       {/* Main */}
       <main className="mx-auto max-w-4xl px-6 py-12">
-
-        {!isAnalyzing ? (
+        {!isAnalyzing && !result ? (
           <>
             {/* Heading */}
             <div className="mb-10">
-
               <p className="text-sm font-bold uppercase tracking-widest text-blue-700">
                 New Complaint
               </p>
@@ -550,25 +319,24 @@ function ComplaintPage({ onBack }) {
               </h2>
 
               <p className="mt-4 max-w-2xl leading-7 text-slate-600">
-                Upload a photograph, describe the issue, and provide
-                the location. SaarthiAI will analyze it and create
-                a trackable government complaint.
+                Upload a photograph, describe the issue, and provide the
+                location. SaarthiAI will analyze it and create a trackable
+                government complaint.
               </p>
             </div>
 
             {/* Error */}
-            {errorMessage && (
-              <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-4">
-                <p className="font-semibold text-red-800">
-                  {errorMessage}
+            {error && (
+              <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
+                <p className="font-semibold">
+                  {error}
                 </p>
               </div>
             )}
 
             {/* Complaint Card */}
             <div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-xl shadow-slate-200/40">
-
-              {/* Image Upload */}
+              {/* Image */}
               <h3 className="text-xl font-bold text-slate-900">
                 Upload an image
               </h3>
@@ -578,21 +346,17 @@ function ComplaintPage({ onBack }) {
               </p>
 
               <div className="mt-6">
-
                 <label
                   htmlFor="image-upload"
-                  className="flex min-h-64 cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 transition hover:border-blue-400 hover:bg-blue-50"
+                  className="flex min-h-64 cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50/60 p-6 transition hover:border-blue-500 hover:bg-blue-50"
                 >
                   {selectedImage ? (
                     <div className="w-full text-center">
-
-                      {previewUrl && (
-                        <img
-                          src={previewUrl}
-                          alt="Selected complaint"
-                          className="mx-auto max-h-80 rounded-2xl object-contain shadow-md"
-                        />
-                      )}
+                      <img
+                        src={URL.createObjectURL(selectedImage)}
+                        alt="Selected complaint"
+                        className="mx-auto max-h-80 rounded-2xl object-contain shadow-md"
+                      />
 
                       <p className="mt-4 font-semibold text-blue-700">
                         Click to choose another image
@@ -612,11 +376,9 @@ function ComplaintPage({ onBack }) {
                       >
                         Remove Image
                       </button>
-
                     </div>
                   ) : (
                     <div className="text-center">
-
                       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-100 text-2xl">
                         📷
                       </div>
@@ -628,7 +390,6 @@ function ComplaintPage({ onBack }) {
                       <p className="mt-1 text-sm text-slate-500">
                         PNG, JPG or JPEG • Maximum 5 MB
                       </p>
-
                     </div>
                   )}
                 </label>
@@ -636,18 +397,15 @@ function ComplaintPage({ onBack }) {
                 <input
                   id="image-upload"
                   type="file"
-                  accept="image/png,image/jpeg"
+                  accept="image/png,image/jpeg,image/jpg"
                   className="hidden"
                   onChange={handleImageChange}
                 />
-
               </div>
 
               {/* Description */}
               <div className="mt-8">
-
                 <div className="flex items-center justify-between">
-
                   <label className="text-sm font-semibold text-slate-800">
                     Describe the issue
                   </label>
@@ -655,39 +413,30 @@ function ComplaintPage({ onBack }) {
                   <span className="text-xs text-slate-400">
                     {description.length}/500
                   </span>
-
                 </div>
 
                 <textarea
                   rows="5"
                   maxLength="500"
                   value={description}
-                  onChange={(event) =>
-                    setDescription(event.target.value)
-                  }
+                  onChange={(event) => setDescription(event.target.value)}
                   placeholder="Example: Garbage has been accumulating here for several days."
                   className="mt-3 w-full resize-none rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
-
               </div>
 
               {/* Location */}
               <div className="mt-8">
-
                 <label className="text-sm font-semibold text-slate-800">
                   Location
                 </label>
 
                 <div className="mt-3 flex flex-col gap-3 sm:flex-row">
-
                   <input
                     type="text"
                     value={location}
                     onChange={(event) => {
                       setLocation(event.target.value);
-
-                      // Manual address does not necessarily have
-                      // GPS coordinates.
                       setLatitude(null);
                       setLongitude(null);
                     }}
@@ -698,23 +447,21 @@ function ComplaintPage({ onBack }) {
                   <button
                     type="button"
                     onClick={handleGetCurrentLocation}
-                    disabled={isLocating}
-                    className="rounded-2xl border border-blue-200 bg-blue-50 px-5 py-3 font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isGettingLocation}
+                    className="rounded-2xl border border-blue-200 bg-blue-50 px-5 py-3 font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isLocating
+                    {isGettingLocation
                       ? "Getting Location..."
                       : "Use Current Location"}
                   </button>
-
                 </div>
 
-                {latitude !== null &&
-                  longitude !== null && (
-                    <p className="mt-2 text-sm text-green-600">
-                      ✓ GPS location captured
-                    </p>
-                  )}
-
+                {latitude !== null && longitude !== null && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Coordinates: {latitude.toFixed(6)},{" "}
+                    {longitude.toFixed(6)}
+                  </p>
+                )}
               </div>
 
               {/* Analyze */}
@@ -725,19 +472,14 @@ function ComplaintPage({ onBack }) {
               >
                 Analyze with AI
               </button>
-
             </div>
           </>
-        ) : (
-          /* ================= ANALYSIS LOADING ================= */
-
+        ) : isAnalyzing ? (
+          /* Analysis Loading */
           <div className="flex min-h-[600px] items-center justify-center">
-
             <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-10 text-center shadow-xl shadow-slate-200/40">
-
-              {/* Loading Icon */}
               <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-blue-50">
-                <div className="h-10 w-10 animate-spin rounded-full border-4 border-blue-100 border-t-blue-700" />
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-blue-100 border-t-blue-700"></div>
               </div>
 
               <p className="mt-8 text-sm font-bold uppercase tracking-widest text-blue-700">
@@ -753,16 +495,13 @@ function ComplaintPage({ onBack }) {
                 your complaint information.
               </p>
 
-              {/* Current Step */}
               <div className="mt-10 rounded-2xl bg-slate-50 p-5">
                 <p className="font-semibold text-slate-800">
                   {analysisSteps[analysisStep]}
                 </p>
               </div>
 
-              {/* Progress */}
               <div className="mt-6">
-
                 <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                   <div
                     className="h-full rounded-full bg-blue-700 transition-all duration-700"
@@ -777,22 +516,17 @@ function ComplaintPage({ onBack }) {
                 </div>
 
                 <div className="mt-3 flex justify-between text-xs text-slate-400">
-
                   <span>
-                    Step {analysisStep + 1} of{" "}
-                    {analysisSteps.length}
+                    Step {analysisStep + 1} of {analysisSteps.length}
                   </span>
 
                   <span>
                     Please wait...
                   </span>
-
                 </div>
               </div>
 
-              {/* Steps */}
               <div className="mt-8 space-y-3 text-left">
-
                 {analysisSteps.map((step, index) => (
                   <div
                     key={step}
@@ -802,34 +536,184 @@ function ComplaintPage({ onBack }) {
                         : "bg-slate-50 text-slate-400"
                     }`}
                   >
-
                     <div
                       className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
                         index < analysisStep
                           ? "bg-green-500 text-white"
                           : index === analysisStep
-                            ? "bg-blue-700 text-white"
-                            : "bg-slate-200 text-slate-400"
+                          ? "bg-blue-700 text-white"
+                          : "bg-slate-200 text-slate-400"
                       }`}
                     >
-                      {index < analysisStep
-                        ? "✓"
-                        : index + 1}
+                      {index < analysisStep ? "✓" : index + 1}
                     </div>
 
                     <span className="font-medium">
                       {step}
                     </span>
-
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Result */
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-green-200 bg-white p-8 shadow-xl shadow-slate-200/40">
 
+              <div className="text-center">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-3xl">
+                  ✓
+                </div>
+
+                <p className="mt-6 text-sm font-bold uppercase tracking-widest text-green-600">
+                  Complaint Submitted
+                </p>
+
+                <h2 className="mt-2 text-3xl font-bold text-slate-950">
+                  Your complaint has been created
+                </h2>
+
+                <p className="mt-3 text-slate-500">
+                  Keep this ticket ID to track your complaint.
+                </p>
+              </div>
+
+              <div className="mt-8 rounded-2xl bg-blue-50 p-6 text-center">
+                <p className="text-xs font-semibold uppercase tracking-widest text-blue-500">
+                  Ticket ID
+                </p>
+
+                <p className="mt-2 text-2xl font-bold tracking-wide text-blue-900">
+                  {result.ticket_id}
+                </p>
+              </div>
+
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                <div className="rounded-2xl bg-slate-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Issue Detected
+                  </p>
+
+                  <p className="mt-2 font-semibold text-slate-900">
+                    {result.issue_detected}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl bg-slate-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Category
+                  </p>
+
+                  <p className="mt-2 font-semibold text-slate-900">
+                    {result.category}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl bg-orange-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-orange-500">
+                    Priority
+                  </p>
+
+                  <p className="mt-2 font-semibold text-orange-950">
+                    {result.priority}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl bg-blue-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-500">
+                    Department
+                  </p>
+
+                  <p className="mt-2 font-semibold text-blue-950">
+                    {result.department}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-slate-200 p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Summary
+                </p>
+
+                <p className="mt-2 leading-7 text-slate-700">
+                  {result.summary}
+                </p>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-slate-200 p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Recommended Action
+                </p>
+
+                <p className="mt-2 leading-7 text-slate-700">
+                  {result.recommended_action}
+                </p>
+              </div>
+
+              <div className="mt-6 flex items-center justify-between rounded-2xl bg-green-50 p-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-green-600">
+                    Status
+                  </p>
+
+                  <p className="mt-1 font-semibold text-green-900">
+                    {result.status}
+                  </p>
+                </div>
+
+                <div className="text-right">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-green-600">
+                    Confidence
+                  </p>
+
+                  <p className="mt-1 text-2xl font-bold text-green-800">
+                    {Math.round((result.confidence || 0) * 100)}%
+                  </p>
+                </div>
+              </div>
+
+              {result.address && (
+                <div className="mt-6 rounded-2xl bg-slate-50 p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Location
+                  </p>
+
+                  <p className="mt-2 text-slate-700">
+                    {result.address}
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResult(null);
+                    setSelectedImage(null);
+                    setDescription("");
+                    setLocation("");
+                    setLatitude(null);
+                    setLongitude(null);
+                    setError("");
+                  }}
+                  className="flex-1 rounded-2xl bg-blue-700 px-6 py-4 font-bold text-white transition hover:bg-blue-800"
+                >
+                  Report Another Issue
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="flex-1 rounded-2xl border border-slate-300 bg-white px-6 py-4 font-bold text-slate-700 transition hover:border-blue-300 hover:text-blue-700"
+                >
+                  Back to Home
+                </button>
               </div>
 
             </div>
           </div>
         )}
-
       </main>
     </div>
   );
